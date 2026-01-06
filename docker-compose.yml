@@ -1,0 +1,133 @@
+services:
+  # =========================
+  # PostgreSQL - Customer
+  # =========================
+  customer-db:
+    image: postgres:15-alpine
+    container_name: customer-db
+    environment:
+      POSTGRES_DB: customer_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - customer-db-data:/var/lib/postgresql/data
+      - ./docker/databases/customer-db-init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - banking-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # =========================
+  # PostgreSQL - Account
+  # =========================
+  account-db:
+    image: postgres:15-alpine
+    container_name: account-db
+    environment:
+      POSTGRES_DB: account_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - account-db-data:/var/lib/postgresql/data
+      - ./docker/databases/account-db-init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - banking-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # =========================
+  # ActiveMQ Artemis
+  # =========================
+  activemq:
+    image: apache/activemq-artemis:2.31.2
+    container_name: activemq
+    environment:
+      ARTEMIS_USER: admin
+      ARTEMIS_PASSWORD: admin
+    ports:
+      - "61616:61616"
+      - "8161:8161"
+    networks:
+      - banking-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8161 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # =========================
+  # Customer Microservice
+  # =========================
+  customer:
+    build:
+      context: ./customer
+      dockerfile: Dockerfile
+    container_name: customer
+    environment:
+      SPRING_APPLICATION_NAME: customer
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_R2DBC_URL: r2dbc:postgresql://customer-db:5432/customer_db
+      SPRING_R2DBC_USERNAME: postgres
+      SPRING_R2DBC_PASSWORD: postgres
+      SPRING_ARTEMIS_BROKER_URL: tcp://activemq:61616
+      SPRING_ARTEMIS_USER: admin
+      SPRING_ARTEMIS_PASSWORD: admin
+    ports:
+      - "8081:8081"
+    depends_on:
+      customer-db:
+        condition: service_healthy
+      activemq:
+        condition: service_healthy
+    networks:
+      - banking-network
+    restart: unless-stopped
+
+  # =========================
+  # Account Microservice
+  # =========================
+  account:
+    build:
+      context: ./account
+      dockerfile: Dockerfile
+    container_name: account
+    environment:
+      SPRING_APPLICATION_NAME: account
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_R2DBC_URL: r2dbc:postgresql://account-db:5432/account_db
+      SPRING_R2DBC_USERNAME: postgres
+      SPRING_R2DBC_PASSWORD: postgres
+      SPRING_ARTEMIS_BROKER_URL: tcp://activemq:61616
+      SPRING_ARTEMIS_USER: admin
+      SPRING_ARTEMIS_PASSWORD: admin
+      APP_CUSTOMER_SERVICE_BASE_URL: http://customer:8081
+    ports:
+      - "8082:8082"
+    depends_on:
+      account-db:
+        condition: service_healthy
+      activemq:
+        condition: service_healthy
+      customer:
+        condition: service_started
+    networks:
+      - banking-network
+    restart: unless-stopped
+
+volumes:
+  customer-db-data:
+  account-db-data:
+
+networks:
+  banking-network:
+    driver: bridge
